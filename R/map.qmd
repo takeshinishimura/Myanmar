@@ -29,10 +29,14 @@ lang: en
 
 ```{r}
 #| message: false
+#| warning: false
 library(sf)
 library(dplyr)
 library(ggplot2)
 library(ggrepel)
+library(ggforce)
+library(scales)
+library(RColorBrewer)
 library(rnaturalearth)
 library(rnaturalearthdata)
 library(cowplot)
@@ -53,8 +57,8 @@ world <- ne_countries(scale = "medium", returnclass = "sf") |>
 mmr <- world |>
   filter(admin == "Myanmar")
 countries <- c(
-  "Myanmar","Bangladesh","India","China","Laos","Thailand",
-  "Cambodia","Vietnam","Malaysia","Indonesia","Nepal","Bhutan"
+  "Myanmar", "Bangladesh", "India", "China", "Laos", "Thailand",
+  "Cambodia", "Vietnam", "Malaysia", "Indonesia", "Nepal", "Bhutan"
 )
 
 bb <- st_bbox(mmr)
@@ -99,10 +103,10 @@ urls <- list(
 map <- lapply(urls, get_myanmar_geojson)
 
 township_sel <- map[["Township"]] |>
-  filter(TS %in% c("Kalaw", "Lawksawk")) |>
-  mutate(TS = factor(TS, levels = c("Kalaw", "Lawksawk")))
+  filter(TS %in% c("Kalaw")) |>
+  mutate(TS = factor(TS, levels = c("Kalaw")))
 
-proj_crs <- 32647  # UTM 47N
+proj_crs <- 32647 # UTM 47N
 township_pts <- township_sel |>
   st_transform(proj_crs) |>
   st_centroid() |>
@@ -110,7 +114,17 @@ township_pts <- township_sel |>
   st_transform(st_crs(township_sel))
 
 Shan_State <- map[["State_Region"]] |>
-  filter(grepl("Shan", ST))
+  filter(grepl("Shan", ST)) |>
+  mutate(ST = factor(ST)) |>
+  left_join(
+    tibble::tribble(
+  ~ST,            ~ha,   ~population,
+  "Shan (East)",  2000,  898191,
+  "Shan (North)", 2800,  2520258,
+  "Shan (South)", 16200, 2405983,
+    ), by = "ST"
+  )
+
 bb_ss <- st_bbox(Shan_State)
 pad <- 1.6
 xlim_ss <- c(bb_ss$xmin - pad, bb_ss$xmax + pad)
@@ -126,10 +140,9 @@ borders_no_mmr <- world |>
   st_difference(mmr_buf)
 
 places_sf <- tibble::tribble(
-  ~name,         ~lon,        ~lat,
-  "Heho",        96.8217017,  20.723192,
-  "Naung Tayar", 96.7570337,  20.293742,
-  "Aungpan",     96.6477771,  20.661791
+  ~name,     ~lon,       ~lat,
+  "Heho",    96.8217017, 20.723192,
+  "Aungban", 96.6477771, 20.661791
 ) |>
   sf::st_as_sf(coords = c("lon", "lat"), crs = 4326) |>
   sf::st_transform(sf::st_crs(map[["Township"]]))
@@ -140,11 +153,14 @@ places_sf <- tibble::tribble(
 
 ```{r}
 #| warning: false
+#| fig-width: 7
+#| fig-height: 7
+#| fig-dpi: 300
 world_map <- ggplot() +
-  geom_sf(data = world, fill = "grey95", color = "grey50", linewidth = .2) +
-  geom_sf(data = mmr, fill = "white", color = NA) +
+  geom_sf(data = world, fill = "white", color = "grey50", linewidth = .05) +
+  geom_sf(data = mmr, fill = "grey80", color = NA) +
 # geom_sf(data = map[["State_Region"]], fill = NA, color = "grey80", linewidth = .2) +
-  geom_sf(data = map[["State_Region"]] |> filter(grepl("Shan", ST)), fill = "grey70", color = NA) +
+  geom_sf(data = Shan_State, fill = brewer.pal(9, "YlOrBr")[3], color = NA) +
   coord_sf(xlim = xlim, ylim = ylim, expand = 0) +
   theme_void()
 
@@ -156,47 +172,82 @@ world_map_text
 
 ```{r}
 #| echo: false
-ggsave(file.path(figdir, "world_map.png"), world_map_text, dpi = 300)
+ggsave("world_map.png", world_map_text, path = figdir, width = 7, height = 7, dpi = 300)
 ```
 
 ```{r}
 #| warning: false
+#| fig-width: 7
+#| fig-height: 7
+#| fig-dpi: 300
 detailed_map <- ggplot() +
   geom_sf(data = borders_no_mmr, fill = "grey95", color = "black", linewidth = .2) +
   geom_sf(data = map[["State_Region"]], fill = NA, color = "grey80", linewidth = .2) +
-  geom_sf(data = Shan_State, fill = "grey70", color = NA) +
+  geom_sf(data = Shan_State, aes(fill = ha), color = "black", linewidth = .2, alpha = .8) +
   geom_sf(data = map[["Country"]], fill = NA, color = "black", linewidth = .2) +
-  geom_sf(data = township_pts, shape = 16, size = 2, fill = "white", color = "black") +
+  geom_mark_hull(data = Shan_State |>
+                          st_point_on_surface() %>%
+                          cbind(st_coordinates(.)) |>
+                          mutate(
+                            label = paste0(
+                              "Population: ", label_comma()(population), "\n",
+                              "Potato Area: ", label_comma()(ha), " ha"
+                            )
+                          ),
+                 aes(x = X, y = Y,
+                     fill = ha,
+                     label = ST,
+                     description = label),
+                 fill = NA,
+                 colour = NA,
+                 expand = unit(19, "mm"),
+                 radius = unit(1, "mm"),
+                 label.fontsize = 12,
+                 label.family = "Helvetica",
+                 label.width = unit(58, "mm"),
+                 label.fill = NA,
+                 label.colour = "black",
+                 con.size = .8,
+                 con.colour = "black") +
+# geom_sf(data = township_pts, shape = 16, size = 2, fill = "white", color = "black") +
+# geom_text_repel(
+#   data = township_pts,
+#   aes(label = TS, geometry = geometry),
+#   nudge_x = c(1, 1),
+#   nudge_y = c(-.25, .5),
+#   stat = "sf_coordinates",
+#   min.segment.length = 0,
+#   family = "Helvetica"
+# ) +
+  geom_sf(data = places_sf |> filter(name == "Heho"), shape = 21, size = 3, fill = "blue", color = "white") +
   geom_text_repel(
-    data = township_pts,
-    aes(label = TS, geometry = geometry),
-    nudge_x = c(1, 1),
-    nudge_y = c(-.25, .5),
-    stat = "sf_coordinates",
-    min.segment.length = 0,
-    family = "Helvetica"
-  ) +
-  geom_sf(data = places_sf, shape = 21, size = 3, fill = "red", color = "white") +
-  geom_text_repel(
-    data = places_sf,
+    data = places_sf |> filter(name == "Heho"),
     aes(label = name, geometry = geometry),
+    nudge_x = c(-1.5),
+    nudge_y = c(0),
     stat = "sf_coordinates",
-    min.segment.length = 0,
-    seed = 123
+    size = 10,
+    family = "Helvetica",
   ) +
   coord_sf(xlim = xlim_ss, ylim = ylim_ss, expand = 0) +
-  theme_void()
+# scale_fill_manual(values = rep("grey70", 3)) +
+  scale_fill_distiller(palette = "YlOrBr", direction = 1) +
+  theme_void() +
+  theme(legend.position = "none")
 
 detailed_map
 ```
 
 ```{r}
 #| echo: false
-ggsave(file.path(figdir, "detailed_map.png"), detailed_map, dpi = 300)
+ggsave("detailed_map.png", detailed_map, path = figdir, width = 7, height = 7, dpi = 300)
 ```
 
 ```{r}
 #| warning: false
+#| fig-width: 7
+#| fig-height: 7
+#| fig-dpi: 300
 detailed_world_map <- ggdraw(detailed_map) +
   draw_plot(
     {world_map +
@@ -209,9 +260,7 @@ detailed_world_map <- ggdraw(detailed_map) +
     height = .3)
 
 detailed_world_map
-```
 
-```{r}
-#| echo: false
-ggsave(file.path(figdir, "detailed_world_map.png"), detailed_world_map, dpi = 300)
+ggsave("detailed_world_map.png", detailed_world_map, path = figdir, width = 7, height = 7, dpi = 300)
+ggsave("detailed_world_map.pdf", detailed_world_map, path = figdir, width = 7, height = 7, dpi = 300)
 ```
